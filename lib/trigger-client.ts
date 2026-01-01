@@ -3,6 +3,8 @@
  * Tasks are defined in trigger/workflows/ directory
  */
 
+import { runs } from '@trigger.dev/sdk';
+
 export { runCommandTask } from '../trigger/workflows/run-command';
 export { createSandboxTask } from '../trigger/workflows/create-sandbox';
 export { writeFilesTask } from '../trigger/workflows/write-files';
@@ -48,13 +50,6 @@ export async function waitForRunOutput(handle: { id: string; publicAccessToken?:
   const runId = handle.id
   console.log('[waitForRunOutput] Starting to wait for run:', runId)
   
-  // Fallback: Use API with publicAccessToken or TRIGGER_API_KEY
-  const token = handle.publicAccessToken || process.env.TRIGGER_API_KEY
-  if (!token) {
-    console.error('[waitForRunOutput] No access token available. publicAccessToken:', !!handle.publicAccessToken, 'TRIGGER_API_KEY:', !!process.env.TRIGGER_API_KEY)
-    throw new Error('No access token available to retrieve run output. Ensure TRIGGER_API_KEY is set in environment variables.')
-  }
-  
   // Reduced attempts for Vercel compatibility (25 seconds max = 50 attempts × 500ms)
   // This ensures we stay within Vercel Pro's 60s timeout with buffer
   const maxAttempts = 50
@@ -62,89 +57,108 @@ export async function waitForRunOutput(handle: { id: string; publicAccessToken?:
   
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
-      // Try v1 API first, then v2
-      const apiUrl = process.env.TRIGGER_API_URL || 'https://api.trigger.dev'
-      let response = await fetch(`${apiUrl}/v1/runs/${runId}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-      })
+      // Use Trigger.dev SDK's runs.retrieve() method (recommended approach)
+      console.log(`[waitForRunOutput] Attempting to retrieve run (attempt ${attempt + 1}/${maxAttempts})...`)
       
-      if (response.status === 404) {
-        // Try v2 API
-        console.log(`[waitForRunOutput] v1 API returned 404, trying v2 API...`)
-        const v2Response = await fetch(`${apiUrl}/v2/runs/${runId}`, {
+      let run: any
+      try {
+        // Use Trigger.dev SDK's runs.retrieve() method (official recommended approach)
+        // This handles authentication and endpoint routing correctly
+        const result = await runs.retrieve(runId)
+        
+        if (result.isSuccess && result.data) {
+          run = result.data
+          console.log(`[waitForRunOutput] SDK retrieve succeeded, run status:`, run.status || run.statusCode || 'unknown')
+        } else {
+          const errorMsg = result.error || 'Unknown error'
+          console.log(`[waitForRunOutput] SDK retrieve failed:`, errorMsg)
+          // Fallback to API if SDK fails
+          throw new Error(`SDK retrieve failed: ${errorMsg}`)
+        }
+      } catch (sdkError) {
+        // Fallback to direct API call if SDK method fails
+        console.log(`[waitForRunOutput] SDK method failed, using API fallback:`, sdkError instanceof Error ? sdkError.message : String(sdkError))
+        
+        const token = handle.publicAccessToken || process.env.TRIGGER_API_KEY
+        if (!token) {
+          console.error('[waitForRunOutput] No access token available. publicAccessToken:', !!handle.publicAccessToken, 'TRIGGER_API_KEY:', !!process.env.TRIGGER_API_KEY)
+          throw new Error('No access token available to retrieve run output. Ensure TRIGGER_API_KEY is set in environment variables.')
+        }
+        
+        const apiUrl = process.env.TRIGGER_API_URL || 'https://api.trigger.dev'
+        const response = await fetch(`${apiUrl}/v2/runs/${runId}`, {
           headers: {
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'application/json',
           },
         })
         
-        if (v2Response.ok) {
-          response = v2Response
-        } else if (v2Response.status === 404 && attempt < 10) {
-          // Run might not be available yet, wait a bit more
-          console.log(`[waitForRunOutput] Run not found yet (attempt ${attempt + 1}/${maxAttempts}), waiting...`)
+        if (!response.ok) {
+          if (response.status === 404 && attempt < 10) {
+            // Run might not be available yet, wait a bit more
+            console.log(`[waitForRunOutput] Run not found yet (attempt ${attempt + 1}/${maxAttempts}), waiting...`)
+            await new Promise(resolve => setTimeout(resolve, delayMs))
+            continue
+          }
+          
+          const errorText = await response.text().catch(() => 'Unable to read error response')
+          console.error(`[waitForRunOutput] API error (attempt ${attempt + 1}/${maxAttempts}): ${response.status} ${response.statusText}`, errorText.substring(0, 200))
+          
+          // If unauthorized, throw immediately
+          if (response.status === 401 || response.status === 403) {
+            throw new Error(`Authentication failed: ${response.status} ${response.statusText}. Check TRIGGER_API_KEY.`)
+          }
+          
+          if (attempt >= 10) {
+            throw new Error(`Failed to fetch run: ${response.status} ${response.statusText}. ${errorText.substring(0, 200)}`)
+          }
+          
+          // Wait before retry for other errors
           await new Promise(resolve => setTimeout(resolve, delayMs))
           continue
-        } else {
-          response = v2Response
         }
+        
+        run = await response.json()
       }
       
-      if (!response.ok) {
-        if (response.status === 404 && attempt < 10) {
-          // Run might not be available yet, wait a bit more
-          console.log(`[waitForRunOutput] Run not found yet (attempt ${attempt + 1}/${maxAttempts}), waiting...`)
-          await new Promise(resolve => setTimeout(resolve, delayMs))
-          continue
-        }
-        const errorText = await response.text().catch(() => 'Unable to read error response')
-        console.error(`[waitForRunOutput] API error (attempt ${attempt + 1}/${maxAttempts}): ${response.status} ${response.statusText}`, errorText.substring(0, 200))
-        
-        // If unauthorized, throw immediately
-        if (response.status === 401 || response.status === 403) {
-          throw new Error(`Authentication failed: ${response.status} ${response.statusText}. Check TRIGGER_API_KEY.`)
-        }
-        
-        if (attempt >= 10) {
-          throw new Error(`Failed to fetch run: ${response.status} ${response.statusText}. ${errorText.substring(0, 200)}`)
-        }
-        
-        // Wait before retry for other errors
-        await new Promise(resolve => setTimeout(resolve, delayMs))
-        continue
-      }
-      
-      const run = await response.json()
+      // Extract status from run object (official Trigger.dev status values)
+      // Status can be: QUEUED, EXECUTING, COMPLETED, FAILED, CANCELED
       const status = run.status || run.statusCode || run.state
       console.log(`[waitForRunOutput] Run status (attempt ${attempt + 1}/${maxAttempts}):`, status)
       console.log(`[waitForRunOutput] Run data keys:`, Object.keys(run))
       
-      // Check for completion - handle multiple possible status values
+      // Check for completion - handle official Trigger.dev status values
       const isCompleted = run.isSuccess || 
                          status === 'COMPLETED' || 
                          status === 'SUCCESS' || 
                          status === 'COMPLETE' ||
                          run.statusCode === 'SUCCESS' ||
+                         run.statusCode === 'COMPLETED' ||
                          run.state === 'COMPLETED'
       
       if (isCompleted) {
         console.log('[waitForRunOutput] Run completed successfully')
         
-        // Try multiple possible output field locations based on Trigger.dev API response structure
+        // Extract output from run object
+        // Official Trigger.dev API returns output in run.output field
+        // The output is the return value from the task's run() function
         let output = run.output
         
-        // If output is not directly available, try other common locations
+        // If output is not directly available, try other possible locations
         if (!output) {
           output = run.result || run.data || run.payload
         }
         
         // If still no output, check if the run object itself contains the task result
+        // This can happen if the API response structure is different
         if (!output && (run.sandboxId || run.sandboxCreated !== undefined)) {
           console.log('[waitForRunOutput] Using run object directly as it contains task result')
           output = run
+        }
+        
+        // Log the output structure for debugging
+        if (output) {
+          console.log('[waitForRunOutput] Output type:', typeof output, 'isArray:', Array.isArray(output))
         }
         
         // Log the extracted output for debugging

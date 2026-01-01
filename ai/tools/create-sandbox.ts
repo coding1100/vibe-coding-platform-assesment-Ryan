@@ -1,6 +1,7 @@
 import type { UIMessageStreamWriter, UIMessage } from 'ai'
 import type { DataPart } from '../messages/data-parts'
 import { sandboxOperationsTask, waitForRunOutput } from '../../lib/trigger-client'
+import { tasks } from '@trigger.dev/sdk'
 import { getRichError } from './get-rich-error'
 import { tool } from 'ai'
 import description from './create-sandbox.md'
@@ -60,14 +61,34 @@ export const createSandbox = ({ writer }: Params) =>
       try {
         // Use sandbox-operations task to ensure all operations happen in the same execution context
         // This avoids process isolation issues when writing files or running commands immediately after creation
-        const handle = await sandboxOperationsTask.trigger({
-          createSandbox: {
-            timeout: timeout ?? 600000,
-            ports,
-          },
-          writeFiles,
-          runCommand,
-        })
+        
+        // Try using SDK's tasks.trigger() method first (recommended for production)
+        let handle: { id: string; publicAccessToken?: string } | null = null
+        
+        try {
+          console.log('[create-sandbox] Attempting to trigger task using tasks.trigger() API...')
+          handle = await tasks.trigger("sandbox-operations", {
+            createSandbox: {
+              timeout: timeout ?? 600000,
+              ports,
+            },
+            writeFiles,
+            runCommand,
+          })
+          console.log('[create-sandbox] tasks.trigger() succeeded, runId:', handle?.id)
+        } catch (sdkError) {
+          // Fallback to task object method if SDK API fails
+          console.log('[create-sandbox] tasks.trigger() failed, trying task.trigger() method:', sdkError instanceof Error ? sdkError.message : String(sdkError))
+          handle = await sandboxOperationsTask.trigger({
+            createSandbox: {
+              timeout: timeout ?? 600000,
+              ports,
+            },
+            writeFiles,
+            runCommand,
+          })
+          console.log('[create-sandbox] task.trigger() succeeded, runId:', handle?.id)
+        }
 
         if (!handle || !handle.id) {
           throw new Error('Failed to trigger Trigger.dev task: No handle returned')
