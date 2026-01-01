@@ -1,0 +1,53 @@
+name: Deploy Trigger.dev Tasks
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'trigger/**'
+      - 'lib/**'
+      - 'trigger.config.ts'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'pnpm-lock.yaml'
+  workflow_dispatch: # Allow manual triggering
+
+jobs:
+  deploy:
+    name: Deploy to Trigger.dev
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm' # Use npm cache (or 'pnpm' if using pnpm)
+      
+      - name: Install dependencies
+        run: |
+          if [ -f "pnpm-lock.yaml" ]; then
+            npm install -g pnpm
+            pnpm install --frozen-lockfile
+          else
+            npm ci
+          fi
+      
+      - name: Deploy Trigger.dev tasks
+        env:
+          TRIGGER_API_KEY: ${{ secrets.TRIGGER_API_KEY }}
+        run: npx trigger.dev@latest deploy
+      
+      - name: Deployment status
+        if: success()
+        run: echo "✅ Trigger.dev tasks deployed successfully!"
+      
+      - name: Deployment failed
+        if: failure()
+        run: echo "❌ Trigger.dev deployment failed. Check the logs above."
+
