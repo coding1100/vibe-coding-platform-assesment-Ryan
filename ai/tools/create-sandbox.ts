@@ -1,7 +1,6 @@
 import type { UIMessageStreamWriter, UIMessage } from 'ai'
 import type { DataPart } from '../messages/data-parts'
 import { sandboxOperationsTask, waitForRunOutput } from '../../lib/trigger-client'
-import { tasks } from '@trigger.dev/sdk'
 import { getRichError } from './get-rich-error'
 import { tool } from 'ai'
 import description from './create-sandbox.md'
@@ -61,129 +60,20 @@ export const createSandbox = ({ writer }: Params) =>
       try {
         // Use sandbox-operations task to ensure all operations happen in the same execution context
         // This avoids process isolation issues when writing files or running commands immediately after creation
-        
-        // Check environment variables
-        if (!process.env.E2B_API_KEY) {
-          throw new Error('E2B_API_KEY is not configured in production environment')
-        }
-        
-        if (!process.env.TRIGGER_API_KEY) {
-          throw new Error('TRIGGER_API_KEY is not configured in production environment')
-        }
-        
-        console.log('[create-sandbox] Triggering sandbox-operations task...')
-        console.log('[create-sandbox] Environment check:', {
-          hasE2BKey: !!process.env.E2B_API_KEY,
-          hasTriggerKey: !!process.env.TRIGGER_API_KEY,
-          triggerApiUrl: process.env.TRIGGER_API_URL || 'https://api.trigger.dev',
-          nodeEnv: process.env.NODE_ENV,
+        const handle = await sandboxOperationsTask.trigger({
+          createSandbox: {
+            timeout: timeout ?? 600000,
+            ports,
+          },
+          writeFiles,
+          runCommand,
         })
-        
-        let handle: any
-        try {
-          // Try using the SDK's tasks.trigger() API first (recommended for production)
-          console.log('[create-sandbox] Attempting to trigger task using tasks.trigger() API...')
-          try {
-            handle = await tasks.trigger("sandbox-operations", {
-              createSandbox: {
-                timeout: timeout ?? 600000,
-                ports,
-              },
-              writeFiles,
-              runCommand,
-            })
-            console.log('[create-sandbox] tasks.trigger() succeeded, handle:', {
-              exists: !!handle,
-              hasId: !!handle?.id,
-              id: handle?.id,
-              hasToken: !!handle?.publicAccessToken,
-            })
-          } catch (sdkError) {
-            // Fallback to task object method if SDK API fails
-            console.log('[create-sandbox] tasks.trigger() failed, trying task.trigger() method:', sdkError instanceof Error ? sdkError.message : String(sdkError))
-            handle = await sandboxOperationsTask.trigger({
-              createSandbox: {
-                timeout: timeout ?? 600000,
-                ports,
-              },
-              writeFiles,
-              runCommand,
-            })
-            console.log('[create-sandbox] task.trigger() succeeded, handle:', {
-              exists: !!handle,
-              hasId: !!handle?.id,
-              id: handle?.id,
-              hasToken: !!handle?.publicAccessToken,
-            })
-          }
-        } catch (triggerError) {
-          console.error('[create-sandbox] Error triggering task:', triggerError)
-          console.error('[create-sandbox] Error details:', {
-            message: triggerError instanceof Error ? triggerError.message : String(triggerError),
-            name: triggerError instanceof Error ? triggerError.name : undefined,
-            stack: triggerError instanceof Error ? triggerError.stack : undefined,
-            cause: triggerError instanceof Error ? triggerError.cause : undefined,
-          })
-          
-          // Check if it's a specific error we can handle
-          if (triggerError instanceof Error) {
-            if (triggerError.message.includes('not found') || triggerError.message.includes('404')) {
-              throw new Error(
-                `Task 'sandbox-operations' not found. Ensure tasks are deployed: ` +
-                `Run 'npx trigger.dev@latest deploy' or check GitHub Actions. ` +
-                `Original error: ${triggerError.message}`
-              )
-            }
-            if (triggerError.message.includes('401') || triggerError.message.includes('403') || triggerError.message.includes('unauthorized')) {
-              throw new Error(
-                `Authentication failed. Check TRIGGER_API_KEY is correct and has proper permissions. ` +
-                `Original error: ${triggerError.message}`
-              )
-            }
-          }
-          
-          throw new Error(
-            `Failed to trigger Trigger.dev task: ${triggerError instanceof Error ? triggerError.message : String(triggerError)}. ` +
-            `Check that tasks are deployed and TRIGGER_API_KEY is correct.`
-          )
+
+        if (!handle || !handle.id) {
+          throw new Error('Failed to trigger Trigger.dev task: No handle returned')
         }
 
-        if (!handle) {
-          console.error('[create-sandbox] Handle is null or undefined')
-          throw new Error('Failed to trigger Trigger.dev task: No handle returned (null/undefined)')
-        }
-        
-        if (!handle.id) {
-          console.error('[create-sandbox] Handle exists but has no id:', handle)
-          throw new Error('Failed to trigger Trigger.dev task: Handle returned but missing run ID')
-        }
-
-        console.log('[create-sandbox] Task triggered successfully, runId:', handle.id, 'hasToken:', !!handle.publicAccessToken)
-        
-        // Add timeout wrapper for Vercel compatibility
-        // Vercel Pro has 60s timeout, so we use 25s to stay safe
-        const timeoutPromise = new Promise<never>((_, reject) => {
-          setTimeout(() => {
-            reject(new Error('Task execution timeout: Exceeded 25 seconds waiting for Trigger.dev task. The task may still be running - check Trigger.dev dashboard.'))
-          }, 25000) // 25 seconds max (within Vercel Pro's 60s limit)
-        })
-        
-        let result: any
-        try {
-          result = await Promise.race([
-            waitForRunOutput(handle),
-            timeoutPromise
-          ])
-          console.log('[create-sandbox] Task completed, result:', result ? 'has result' : 'no result', 'sandboxId:', result?.sandboxId)
-        } catch (waitError) {
-          console.error('[create-sandbox] Error waiting for task output:', waitError)
-          // If we timeout, the task might still be running
-          // Provide the runId so user can check status
-          throw new Error(
-            `Failed to get task result: ${waitError instanceof Error ? waitError.message : String(waitError)}. ` +
-            `Task run ID: ${handle.id}. Check Trigger.dev dashboard for task status.`
-          )
-        }
+        const result = await waitForRunOutput(handle)
         const sandboxId = result?.sandboxId
 
         if (!sandboxId) {
