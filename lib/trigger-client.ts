@@ -73,12 +73,24 @@ export async function waitForRunOutput(handle: { id: string; publicAccessToken?:
       
       if (response.status === 404) {
         // Try v2 API
-        response = await fetch(`${apiUrl}/v2/runs/${runId}`, {
+        console.log(`[waitForRunOutput] v1 API returned 404, trying v2 API...`)
+        const v2Response = await fetch(`${apiUrl}/v2/runs/${runId}`, {
           headers: {
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'application/json',
           },
         })
+        
+        if (v2Response.ok) {
+          response = v2Response
+        } else if (v2Response.status === 404 && attempt < 10) {
+          // Run might not be available yet, wait a bit more
+          console.log(`[waitForRunOutput] Run not found yet (attempt ${attempt + 1}/${maxAttempts}), waiting...`)
+          await new Promise(resolve => setTimeout(resolve, delayMs))
+          continue
+        } else {
+          response = v2Response
+        }
       }
       
       if (!response.ok) {
@@ -106,15 +118,78 @@ export async function waitForRunOutput(handle: { id: string; publicAccessToken?:
       }
       
       const run = await response.json()
-      console.log(`[waitForRunOutput] Run status (attempt ${attempt + 1}/${maxAttempts}):`, run.status || run.statusCode)
+      const status = run.status || run.statusCode || run.state
+      console.log(`[waitForRunOutput] Run status (attempt ${attempt + 1}/${maxAttempts}):`, status)
+      console.log(`[waitForRunOutput] Run data keys:`, Object.keys(run))
       
-      if (run.isSuccess || run.status === 'COMPLETED' || run.status === 'SUCCESS' || run.statusCode === 'SUCCESS') {
+      // Check for completion - handle multiple possible status values
+      const isCompleted = run.isSuccess || 
+                         status === 'COMPLETED' || 
+                         status === 'SUCCESS' || 
+                         status === 'COMPLETE' ||
+                         run.statusCode === 'SUCCESS' ||
+                         run.state === 'COMPLETED'
+      
+      if (isCompleted) {
         console.log('[waitForRunOutput] Run completed successfully')
-        return run.output
+        
+        // Try multiple possible output field locations based on Trigger.dev API response structure
+        let output = run.output
+        
+        // If output is not directly available, try other common locations
+        if (!output) {
+          output = run.result || run.data || run.payload
+        }
+        
+        // If still no output, check if the run object itself contains the task result
+        if (!output && (run.sandboxId || run.sandboxCreated !== undefined)) {
+          console.log('[waitForRunOutput] Using run object directly as it contains task result')
+          output = run
+        }
+        
+        // Log the extracted output for debugging
+        if (output) {
+          console.log('[waitForRunOutput] Extracted output:', {
+            hasOutput: true,
+            hasSandboxId: !!output.sandboxId,
+            sandboxId: output.sandboxId,
+            sandboxCreated: output.sandboxCreated,
+            keys: Object.keys(output),
+          })
+          
+          // Validate that we have the expected structure
+          if (output.sandboxId || output.sandboxCreated !== undefined) {
+            return output
+          }
+          
+          // Log full structure for debugging if it doesn't match expected format
+          console.log('[waitForRunOutput] Output structure (first 1000 chars):', 
+            JSON.stringify(output, null, 2).substring(0, 1000))
+        } else {
+          console.warn('[waitForRunOutput] Completed but no output found in run object')
+          console.log('[waitForRunOutput] Full run object (first 1000 chars):', 
+            JSON.stringify(run, null, 2).substring(0, 1000))
+        }
+        
+        // Last resort: return the run object even if it doesn't have expected fields
+        // This allows the calling code to handle it
+        return output || run
       }
       
-      if (run.status === 'FAILED' || run.status === 'ERROR' || run.status === 'CANCELED' || run.statusCode === 'FAILED') {
-        const errorMessage = run.error?.message || run.output?.error || run.message || 'Task execution failed'
+      // Check for failure - handle multiple possible status values
+      const isFailed = run.status === 'FAILED' || 
+                      run.status === 'ERROR' || 
+                      run.status === 'CANCELED' || 
+                      run.statusCode === 'FAILED' ||
+                      run.state === 'FAILED' ||
+                      run.state === 'ERROR'
+      
+      if (isFailed) {
+        const errorMessage = run.error?.message || 
+                           run.output?.error || 
+                           run.message || 
+                           run.error ||
+                           'Task execution failed'
         console.error('[waitForRunOutput] Run failed:', errorMessage)
         throw new Error(errorMessage)
       }

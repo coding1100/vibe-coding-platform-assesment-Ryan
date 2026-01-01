@@ -73,11 +73,24 @@ export const createSandbox = ({ writer }: Params) =>
           throw new Error('Failed to trigger Trigger.dev task: No handle returned')
         }
 
+        console.log('[create-sandbox] Waiting for task output, runId:', handle.id)
         const result = await waitForRunOutput(handle)
+        console.log('[create-sandbox] Task output received:', {
+          hasResult: !!result,
+          hasSandboxId: !!result?.sandboxId,
+          sandboxId: result?.sandboxId,
+          sandboxCreated: result?.sandboxCreated,
+          keys: result ? Object.keys(result) : [],
+        })
+        
         const sandboxId = result?.sandboxId
 
         if (!sandboxId) {
-          throw new Error('Failed to create sandbox: No sandboxId returned from Trigger.dev task')
+          console.error('[create-sandbox] No sandboxId in result:', JSON.stringify(result, null, 2))
+          throw new Error(
+            `Failed to create sandbox: No sandboxId returned from Trigger.dev task. ` +
+            `Result: ${JSON.stringify(result, null, 2).substring(0, 500)}`
+          )
         }
 
         // Extract file paths and contents from writeFilesResult for UI display and caching
