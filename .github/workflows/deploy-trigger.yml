@@ -30,13 +30,7 @@ jobs:
           cache: 'npm' # Use npm cache (or 'pnpm' if using pnpm)
       
       - name: Install dependencies
-        run: |
-          if [ -f "pnpm-lock.yaml" ]; then
-            npm install -g pnpm
-            pnpm install --frozen-lockfile
-          else
-            npm ci
-          fi
+        run: npm install --legacy-peer-deps
       
       - name: Deploy Trigger.dev tasks
         env:
