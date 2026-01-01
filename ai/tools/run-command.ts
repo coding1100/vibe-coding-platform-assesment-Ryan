@@ -51,35 +51,21 @@ export const runCommand = ({ writer }: Params) =>
       try {
         // Use sandbox-operations task to ensure same execution context
         // This ensures the sandbox is accessible even if it was created in a different process
-        // Use invoke() for synchronous execution instead of trigger() + waitForRunOutput()
-        let result: any
-        try {
-          result = await sandboxOperationsTask.invoke({
-            sandboxId, // Use existing sandbox
-            runCommand: {
-              command,
-              args,
-              sudo,
-              wait,
-            },
-          })
-        } catch (invokeError) {
-          const handle = await sandboxOperationsTask.trigger({
-            sandboxId, // Use existing sandbox
-            runCommand: {
-              command,
-              args,
-              sudo,
-              wait,
-            },
-          })
+        const handle = await sandboxOperationsTask.trigger({
+          sandboxId, // Use existing sandbox
+          runCommand: {
+            command,
+            args,
+            sudo,
+            wait,
+          },
+        })
 
-          if (!handle || !handle.id) {
-            throw new Error('Failed to trigger Trigger.dev task: No handle returned')
-          }
-
-          result = await waitForRunOutput(handle)
+        if (!handle || !handle.id) {
+          throw new Error('Failed to trigger Trigger.dev task: No handle returned')
         }
+
+        const result = await waitForRunOutput(handle)
         const commandId = result?.runCommandResult?.commandId
 
         if (!commandId && result?.runCommandResult?.status !== 'completed') {

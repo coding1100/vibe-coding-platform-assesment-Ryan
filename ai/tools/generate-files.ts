@@ -44,31 +44,19 @@ export const generateFiles = ({ writer, modelId }: Params) =>
             try {
               // Use sandbox-operations task to ensure same execution context
               // This ensures the sandbox is accessible even if it was created in a different process
-              // Use invoke() for synchronous execution instead of trigger() + waitForRunOutput()
-              let result: any
-              try {
-                result = await sandboxOperationsTask.invoke({
-                  sandboxId, // Use existing sandbox
-                  writeFiles: chunk.files.map((file) => ({
-                    path: file.path,
-                    content: file.content,
-                  })),
-                })
-              } catch (invokeError) {
-                const handle = await sandboxOperationsTask.trigger({
-                  sandboxId, // Use existing sandbox
-                  writeFiles: chunk.files.map((file) => ({
-                    path: file.path,
-                    content: file.content,
-                  })),
-                })
+              const handle = await sandboxOperationsTask.trigger({
+                sandboxId, // Use existing sandbox
+                writeFiles: chunk.files.map((file) => ({
+                  path: file.path,
+                  content: file.content,
+                })),
+              })
 
-                if (!handle || !handle.id) {
-                  throw new Error('Failed to trigger sandbox operations task')
-                }
-
-                result = await waitForRunOutput(handle)
+              if (!handle || !handle.id) {
+                throw new Error('Failed to trigger sandbox operations task')
               }
+
+              const result = await waitForRunOutput(handle)
               uploaded.push(...chunk.files)
 
               // Cache file contents on the server side for API route access

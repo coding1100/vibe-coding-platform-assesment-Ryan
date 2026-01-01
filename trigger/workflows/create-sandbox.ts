@@ -1,7 +1,5 @@
 import { task } from "@trigger.dev/sdk";
 import { e2bClient } from "@/lib/e2b-client";
-import { writeFilesTask } from "./write-files";
-import { runCommandTask } from "./run-command";
 
 /**
  * Trigger.dev task for creating e2b sandboxes
@@ -44,26 +42,11 @@ export const createSandboxTask = task({
         status: 'created',
       };
 
-      if (payload.writeFiles && payload.writeFiles.length > 0) {
-        const writeResult = await writeFilesTask.invoke({
-          sandboxId: result.sandboxId,
-          files: payload.writeFiles,
-        });
-        response.writeFilesResult = writeResult;
-        response.status = 'created-with-operations';
-      }
-
-      if (payload.runCommand) {
-        const commandResult = await runCommandTask.invoke({
-          sandboxId: result.sandboxId,
-          command: payload.runCommand.command,
-          args: payload.runCommand.args,
-          sudo: payload.runCommand.sudo,
-          wait: payload.runCommand.wait ?? true,
-        });
-        response.runCommandResult = commandResult;
-        response.status = 'created-with-operations';
-      }
+      // Note: Tasks cannot call other tasks directly.
+      // If you need to chain operations, use the sandbox-operations task instead,
+      // which handles all operations in a single execution context.
+      // This task only creates the sandbox - additional operations should be done
+      // via sandbox-operations task from the application code.
 
       return response;
     } catch (error) {

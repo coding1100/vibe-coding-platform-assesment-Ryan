@@ -21,7 +21,11 @@ export function getRichError({ action, args, error }: Params) {
   }
 }
 
-function getErrorFields(error: unknown) {
+function getErrorFields(error: unknown): {
+  message: string
+  json?: any
+  text?: string
+} {
   if (!(error instanceof Error)) {
     return {
       message: String(error),

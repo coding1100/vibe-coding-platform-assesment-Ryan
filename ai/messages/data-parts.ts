@@ -9,11 +9,23 @@ export const dataPartSchema = z.object({
     sandboxId: z.string().optional(),
     status: z.enum(['loading', 'done', 'error']),
     error: errorSchema.optional(),
+    writeFilesResult: z.any().optional(),
+    runCommandResult: z.any().optional(),
+    paths: z.array(z.string()).optional(),
+    fileContents: z.array(z.object({
+      path: z.string(),
+      content: z.string(),
+    })).optional(),
   }),
   'generating-files': z.object({
     paths: z.array(z.string()),
     status: z.enum(['generating', 'uploading', 'uploaded', 'done', 'error']),
     error: errorSchema.optional(),
+    sandboxId: z.string().optional(),
+    fileContents: z.array(z.object({
+      path: z.string(),
+      content: z.string(),
+    })).optional(),
   }),
   'run-command': z.object({
     sandboxId: z.string(),
@@ -26,7 +38,8 @@ export const dataPartSchema = z.object({
   }),
   'get-sandbox-url': z.object({
     url: z.string().optional(),
-    status: z.enum(['loading', 'done']),
+    status: z.enum(['loading', 'done', 'error']),
+    error: errorSchema.optional(),
   }),
   'report-errors': z.object({
     summary: z.string(),

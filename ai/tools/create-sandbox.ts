@@ -60,33 +60,20 @@ export const createSandbox = ({ writer }: Params) =>
       try {
         // Use sandbox-operations task to ensure all operations happen in the same execution context
         // This avoids process isolation issues when writing files or running commands immediately after creation
-        // Use invoke() for synchronous execution instead of trigger() + waitForRunOutput()
-        let result: any
-        try {
-          result = await sandboxOperationsTask.invoke({
-            createSandbox: {
-              timeout: timeout ?? 600000,
-              ports,
-            },
-            writeFiles,
-            runCommand,
-          })
-        } catch (invokeError) {
-          const handle = await sandboxOperationsTask.trigger({
-            createSandbox: {
-              timeout: timeout ?? 600000,
-              ports,
-            },
-            writeFiles,
-            runCommand,
-          })
+        const handle = await sandboxOperationsTask.trigger({
+          createSandbox: {
+            timeout: timeout ?? 600000,
+            ports,
+          },
+          writeFiles,
+          runCommand,
+        })
 
-          if (!handle || !handle.id) {
-            throw new Error('Failed to trigger Trigger.dev task: No handle returned')
-          }
-
-          result = await waitForRunOutput(handle)
+        if (!handle || !handle.id) {
+          throw new Error('Failed to trigger Trigger.dev task: No handle returned')
         }
+
+        const result = await waitForRunOutput(handle)
         const sandboxId = result?.sandboxId
 
         if (!sandboxId) {
