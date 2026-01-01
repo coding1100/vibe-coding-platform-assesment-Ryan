@@ -36,76 +36,47 @@ export interface FileOperationPayload {
 
 /**
  * Helper function to wait for a Trigger.dev run and get its output
+ * 
+ * Note: In Vercel serverless functions, this has timeout constraints:
+ * - Hobby: 10 seconds
+ * - Pro: 60 seconds
+ * - Enterprise: Custom
+ * 
+ * This function uses a maximum of 25 seconds (50 attempts × 500ms) to stay within Pro plan limits
  */
 export async function waitForRunOutput(handle: { id: string; publicAccessToken?: string }): Promise<any> {
   const runId = handle.id
+  console.log('[waitForRunOutput] Starting to wait for run:', runId)
   
-  // Try to use SDK's runs.retrieve() method first
-  try {
-    const { runs } = await import('@trigger.dev/sdk')
-    
-    if (runs && typeof (runs as any).retrieve === 'function') {
-      const maxAttempts = 60
-      const delayMs = 500
-      
-      for (let attempt = 0; attempt < maxAttempts; attempt++) {
-        try {
-          const run = await (runs as any).retrieve(runId)
-          
-          if (run?.isSuccess || run?.status === 'COMPLETED' || run?.status === 'SUCCESS') {
-            return run.output
-          }
-          
-          if (run?.status === 'FAILED' || run?.status === 'ERROR' || run?.status === 'CANCELED') {
-            const errorMessage = run.error?.message || run.output?.error || 'Task execution failed'
-            throw new Error(errorMessage)
-          }
-          
-          // Run is still in progress, wait and retry
-          if (attempt < maxAttempts - 1) {
-            await new Promise(resolve => setTimeout(resolve, delayMs))
-          }
-        } catch (error) {
-          if (error instanceof Error && !error.message.includes('not found') && !error.message.includes('404')) {
-            throw error
-          }
-          
-          // Wait before retry
-          if (attempt < maxAttempts - 1) {
-            await new Promise(resolve => setTimeout(resolve, delayMs))
-          }
-        }
-      }
-      
-      throw new Error('Task did not complete within timeout')
-    }
-  } catch (sdkError) {
-    // Fallback to API if SDK method doesn't work
-  }
-  
-  // Fallback: Use API with publicAccessToken
-  const token = handle.publicAccessToken
+  // Fallback: Use API with publicAccessToken or TRIGGER_API_KEY
+  const token = handle.publicAccessToken || process.env.TRIGGER_API_KEY
   if (!token) {
-    throw new Error('No access token available to retrieve run output')
+    console.error('[waitForRunOutput] No access token available. publicAccessToken:', !!handle.publicAccessToken, 'TRIGGER_API_KEY:', !!process.env.TRIGGER_API_KEY)
+    throw new Error('No access token available to retrieve run output. Ensure TRIGGER_API_KEY is set in environment variables.')
   }
   
-  const maxAttempts = 60
+  // Reduced attempts for Vercel compatibility (25 seconds max = 50 attempts × 500ms)
+  // This ensures we stay within Vercel Pro's 60s timeout with buffer
+  const maxAttempts = 50
   const delayMs = 500
   
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
       // Try v1 API first, then v2
-      let response = await fetch(`https://api.trigger.dev/v1/runs/${runId}`, {
+      const apiUrl = process.env.TRIGGER_API_URL || 'https://api.trigger.dev'
+      let response = await fetch(`${apiUrl}/v1/runs/${runId}`, {
         headers: {
           'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
         },
       })
       
       if (response.status === 404) {
         // Try v2 API
-        response = await fetch(`https://api.trigger.dev/v2/runs/${runId}`, {
+        response = await fetch(`${apiUrl}/v2/runs/${runId}`, {
           headers: {
             'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
           },
         })
       }
@@ -113,35 +84,68 @@ export async function waitForRunOutput(handle: { id: string; publicAccessToken?:
       if (!response.ok) {
         if (response.status === 404 && attempt < 10) {
           // Run might not be available yet, wait a bit more
+          console.log(`[waitForRunOutput] Run not found yet (attempt ${attempt + 1}/${maxAttempts}), waiting...`)
           await new Promise(resolve => setTimeout(resolve, delayMs))
           continue
         }
-        throw new Error(`Failed to fetch run: ${response.status} ${response.statusText}`)
+        const errorText = await response.text().catch(() => 'Unable to read error response')
+        console.error(`[waitForRunOutput] API error (attempt ${attempt + 1}/${maxAttempts}): ${response.status} ${response.statusText}`, errorText.substring(0, 200))
+        
+        // If unauthorized, throw immediately
+        if (response.status === 401 || response.status === 403) {
+          throw new Error(`Authentication failed: ${response.status} ${response.statusText}. Check TRIGGER_API_KEY.`)
+        }
+        
+        if (attempt >= 10) {
+          throw new Error(`Failed to fetch run: ${response.status} ${response.statusText}. ${errorText.substring(0, 200)}`)
+        }
+        
+        // Wait before retry for other errors
+        await new Promise(resolve => setTimeout(resolve, delayMs))
+        continue
       }
       
       const run = await response.json()
+      console.log(`[waitForRunOutput] Run status (attempt ${attempt + 1}/${maxAttempts}):`, run.status || run.statusCode)
       
-      if (run.isSuccess || run.status === 'COMPLETED' || run.status === 'SUCCESS') {
+      if (run.isSuccess || run.status === 'COMPLETED' || run.status === 'SUCCESS' || run.statusCode === 'SUCCESS') {
+        console.log('[waitForRunOutput] Run completed successfully')
         return run.output
       }
       
-      if (run.status === 'FAILED' || run.status === 'ERROR' || run.status === 'CANCELED') {
-        const errorMessage = run.error?.message || run.output?.error || 'Task execution failed'
+      if (run.status === 'FAILED' || run.status === 'ERROR' || run.status === 'CANCELED' || run.statusCode === 'FAILED') {
+        const errorMessage = run.error?.message || run.output?.error || run.message || 'Task execution failed'
+        console.error('[waitForRunOutput] Run failed:', errorMessage)
         throw new Error(errorMessage)
       }
       
       // Run is still in progress, wait and retry
       if (attempt < maxAttempts - 1) {
+        if (attempt % 10 === 0) {
+          console.log(`[waitForRunOutput] Run in progress, waiting... (${attempt + 1}/${maxAttempts})`)
+        }
         await new Promise(resolve => setTimeout(resolve, delayMs))
       }
     } catch (error) {
-      if (error instanceof Error && error.message.includes('fetch run') && attempt >= 10) {
-        throw error
+      // If it's a network error and we've tried enough times, throw
+      if (error instanceof Error) {
+        if (error.message.includes('fetch') || error.message.includes('network') || error.message.includes('ECONNREFUSED')) {
+          if (attempt >= 5) {
+            console.error('[waitForRunOutput] Network error after multiple attempts:', error.message)
+            throw error
+          }
+        } else if (!error.message.includes('not found') && !error.message.includes('404')) {
+          // For non-404 errors, throw immediately if we've tried a few times
+          if (attempt >= 5) {
+            throw error
+          }
+        }
       }
       
       // On last attempt, throw the error
       if (attempt === maxAttempts - 1) {
-        throw new Error(`Task did not complete: ${error instanceof Error ? error.message : String(error)}`)
+        console.error('[waitForRunOutput] Max attempts reached, throwing error')
+        throw new Error(`Task did not complete within timeout (${maxAttempts * delayMs / 1000}s): ${error instanceof Error ? error.message : String(error)}`)
       }
       
       // Wait before retry
@@ -149,6 +153,7 @@ export async function waitForRunOutput(handle: { id: string; publicAccessToken?:
     }
   }
   
-  throw new Error('Task did not complete within timeout')
+  console.error('[waitForRunOutput] Exited loop without completing')
+  throw new Error(`Task did not complete within timeout (${maxAttempts * delayMs / 1000} seconds)`)
 }
 
