@@ -64,16 +64,15 @@ export async function waitForRunOutput(handle: { id: string; publicAccessToken?:
       try {
         // Use Trigger.dev SDK's runs.retrieve() method (official recommended approach)
         // This handles authentication and endpoint routing correctly
-        const result = await runs.retrieve(runId)
+        // Note: runs.retrieve() returns the run object directly, not a result wrapper
+        run = await runs.retrieve(runId)
         
-        if (result.isSuccess && result.data) {
-          run = result.data
+        if (run && (run.status || run.statusCode)) {
           console.log(`[waitForRunOutput] SDK retrieve succeeded, run status:`, run.status || run.statusCode || 'unknown')
         } else {
-          const errorMsg = result.error || 'Unknown error'
-          console.log(`[waitForRunOutput] SDK retrieve failed:`, errorMsg)
-          // Fallback to API if SDK fails
-          throw new Error(`SDK retrieve failed: ${errorMsg}`)
+          console.log(`[waitForRunOutput] SDK retrieve returned invalid run object`)
+          // Fallback to API if SDK returns invalid data
+          throw new Error('SDK retrieve returned invalid run object')
         }
       } catch (sdkError) {
         // Fallback to direct API call if SDK method fails
