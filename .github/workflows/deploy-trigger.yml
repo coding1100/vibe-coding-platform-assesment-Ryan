@@ -32,10 +32,11 @@ jobs:
       - name: Install dependencies
         run: npm install --legacy-peer-deps
       
-      - name: Deploy Trigger.dev tasks
+      - name: 🚀 Deploy Trigger.dev
         env:
           TRIGGER_API_KEY: ${{ secrets.TRIGGER_API_KEY }}
-        run: npx trigger.dev@latest deploy
+          TRIGGER_ACCESS_TOKEN: ${{ secrets.TRIGGER_ACCESS_TOKEN }}
+        run: npm run deploy:trigger
       
       - name: Deployment status
         if: success()
